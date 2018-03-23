@@ -56,6 +56,7 @@
 #include <sstream>
 
 #include "parameters.h"
+#include "preconditionerPilut.h"
 #include "utilities.h"
 
 namespace Fluid
@@ -91,7 +92,7 @@ namespace Fluid
      * required to specify all the input parameters.
      */
     ParallelCompressibleFluid(parallel::distributed::Triangulation<dim> &,
-                         const Parameters::AllParameters &);
+                              const Parameters::AllParameters &);
     /*! \brief Destructor. */
     ~ParallelCompressibleFluid() { dof_handler.clear(); };
     /**
@@ -295,24 +296,26 @@ namespace Fluid
       const SmartPointer<PETScWrappers::MPI::BlockSparseMatrix> Abs_A_matrix;
       const SmartPointer<PETScWrappers::MPI::BlockSparseMatrix> schur_matrix;
       const SmartPointer<PETScWrappers::MPI::BlockSparseMatrix> B2pp_matrix;
-      PETScWrappers::PreconditionPilut Pvv_inverse;
-      PETScWrappers::PreconditionPilut B2pp_inverse;
+      PreconditionPilut Pvv_inverse;
+      PreconditionPilut B2pp_inverse;
       std::shared_ptr<SchurComplementTpp> Tpp;
       // iteration counter for solving Tpp
       mutable int Tpp_itr;
       class SchurComplementTpp : public Subscriptor
       {
       public:
-        SchurComplementTpp(const std::vector<IndexSet> &owned_partitioning,
+        SchurComplementTpp(TimerOutput &timer,
+                           const std::vector<IndexSet> &owned_partitioning,
                            const PETScWrappers::MPI::BlockSparseMatrix &system,
-                           const PETScWrappers::PreconditionPilut &Pvvinv);
+                           const PreconditionPilut &Pvvinv);
         void vmult(PETScWrappers::MPI::Vector &dst,
                    const PETScWrappers::MPI::Vector &src) const;
 
       private:
+        TimerOutput &timer;
         const SmartPointer<const PETScWrappers::MPI::BlockSparseMatrix>
           system_matrix;
-        const PETScWrappers::PreconditionPilut* Pvv_inverse;
+        const PreconditionPilut *Pvv_inverse;
         PETScWrappers::MPI::BlockVector dumb_vector;
       };
     };

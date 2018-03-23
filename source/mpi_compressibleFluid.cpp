@@ -34,10 +34,11 @@ namespace Fluid
   template <int dim>
   ParallelCompressibleFluid<dim>::BlockIncompSchurPreconditioner::
     SchurComplementTpp::SchurComplementTpp(
+      TimerOutput &timer,
       const std::vector<IndexSet> &owned_partitioning,
       const PETScWrappers::MPI::BlockSparseMatrix &system,
-      const PETScWrappers::PreconditionPilut &Pvvinv)
-    : system_matrix(&system), Pvv_inverse(&Pvvinv)
+      const PreconditionPilut &Pvvinv)
+    : timer(timer), system_matrix(&system), Pvv_inverse(&Pvvinv)
   {
     dumb_vector.reinit(owned_partitioning,
                        system_matrix->get_mpi_communicator());
@@ -48,11 +49,14 @@ namespace Fluid
     SchurComplementTpp::vmult(PETScWrappers::MPI::Vector &dst,
                               const PETScWrappers::MPI::Vector &src) const
   {
-    // this is the exact representation of Tpp = App - Apv * Avv * Avp.
+    TimerOutput::Scope timer_section(timer, "Tpp vmult");
+    // this is the exact representation of Tpp = App - Apv * Pvv * Avp.
     PETScWrappers::MPI::Vector tmp1(dumb_vector.block(0)),
       tmp2(dumb_vector.block(0)), tmp3(src);
     system_matrix->block(0, 1).vmult(tmp1, src);
+    timer.enter_subsection("Pvv vmult 1");
     Pvv_inverse->vmult(tmp2, tmp1);
+    timer.leave_subsection("Pvv vmult 1");
     system_matrix->block(1, 0).vmult(tmp3, tmp2);
     system_matrix->block(1, 1).vmult(dst, src);
     dst -= tmp3;
@@ -77,15 +81,14 @@ namespace Fluid
     // Initialize the Pvv inverse (the ILU(0) factorization of Avv)
     timer.enter_subsection("ILU for Pvv");
     Pvv_inverse.initialize(system_matrix->block(0, 0),
-                           PETScWrappers::PreconditionPilut::AdditionalData(
-                             200, 30, 0.0005));
+                           PreconditionPilut::AdditionalData(20, 30, 0.005));
 
     timer.leave_subsection("ILU for Pvv");
-    timer.enter_subsection("Tpp and B2pp");
+    timer.enter_subsection("Tpp and B2pp 1");
 
     // Initialize Tpp
     Tpp.reset(
-      new SchurComplementTpp(owned_partitioning, *system_matrix, Pvv_inverse));
+      new SchurComplementTpp(timer, owned_partitioning, *system_matrix, Pvv_inverse));
     // Compute B2pp matrix App - Apv*rowsum(|Avv|)^(-1)*Avp
     // as the preconditioner to solve Tpp^-1
     PETScWrappers::MPI::BlockVector IdentityVector, RowSumAvv, ReverseRowSum;
@@ -150,14 +153,14 @@ namespace Fluid
                                      system_matrix->block(0, 1),
                                      ReverseRowSum.block(0));
     B2pp_matrix->block(1, 1) = 0.0;
+    B2pp_matrix->compress(VectorOperation::insert);
     // Add in numbers to B2pp
     B2pp_matrix->block(1, 1).add(-1, schur_matrix->block(1, 1));
     B2pp_matrix->block(1, 1).add(1, system_matrix->block(1, 1));
     B2pp_matrix->compress(VectorOperation::add);
-    B2pp_inverse.initialize(
-      B2pp_matrix->block(1, 1),
-      PETScWrappers::PreconditionPilut::AdditionalData(200, 30, 0.0005));
-    timer.leave_subsection("Tpp and B2pp");
+    B2pp_inverse.initialize(B2pp_matrix->block(1, 1),
+                            PreconditionPilut::AdditionalData(20, 30, 0.005));
+    timer.leave_subsection("Tpp and B2pp 1");
   }
 
   /**
@@ -169,23 +172,25 @@ namespace Fluid
     PETScWrappers::MPI::BlockVector &dst,
     const PETScWrappers::MPI::BlockVector &src) const
   {
-    timer.enter_subsection("ILU for Pvv");
+    timer.enter_subsection("Apply Pvv 1");
     // Compute the intermediate vector:
     //      |I           0|*|src(0)| = |src(0)|
     //      |-ApvPvv^-1  I| |src(1)|   |ptmp  |
     /////////////////////////////////////////
     PETScWrappers::MPI::Vector ptmp1(src.block(0)), ptmp(src.block(1));
+    timer.enter_subsection("Pvv vmult");
     Pvv_inverse.vmult(ptmp1, src.block(0));
+    timer.leave_subsection("Pvv vmult");
     this->Apv().vmult(ptmp, ptmp1);
     ptmp *= -1.0;
     ptmp += src.block(1);
 
-    timer.leave_subsection("ILU for Pvv");
-    timer.enter_subsection("Tpp and B2pp");
+    timer.leave_subsection("Apply Pvv 1");
+    timer.enter_subsection("Tpp and B2pp 2");
 
     // Compute the final vector:
     //      |Pvv^-1     -Pvv^-1*Avp*Tpp^-1|*|src(0)|
-    //      |0          Tpp^-1            | |ptmp  |
+    //      |0           Tpp^-1           | |ptmp  |
     //                        =   |Pvv^-1*src(0) - Pvv^-1*Avp*Tpp^-1*ptmp|
     //                            |Tpp^-1 * ptmp                         |
     //////////////////////////////////////////
@@ -199,7 +204,7 @@ namespace Fluid
       dst.block(1) = c;
     }
     // Compute the multiplication
-    timer.leave_subsection("Tpp and B2pp");
+    timer.leave_subsection("Tpp and B2pp 2");
     timer.enter_subsection("Solving Tpp");
     SolverControl solver_control(
       ptmp.size(), 1e-6 * ptmp.l2_norm(), true, true);
@@ -207,20 +212,23 @@ namespace Fluid
       solver_control,
       SolverGMRES<PETScWrappers::MPI::Vector>::AdditionalData(200));
     gmres.solve(*Tpp, dst.block(1), ptmp, B2pp_inverse);
+    //B2pp_inverse.vmult(dst.block(1), ptmp);
     // Count iterations for this solver solving Tpp inverse
     Tpp_itr += solver_control.last_step();
 
     timer.leave_subsection("Solving Tpp");
-    timer.enter_subsection("ILU for Pvv");
+    timer.enter_subsection("Apply Pvv 2");
 
     // Solve Pvv^-1*src(0) - Pvv^-1*Avp*dst(1)
     PETScWrappers::MPI::Vector utmp1(src.block(0)), utmp2(src.block(0));
     this->Avp().vmult(utmp1, dst.block(1));
+    timer.enter_subsection("Pvv vmult");
     Pvv_inverse.vmult(utmp2, utmp1);
     Pvv_inverse.vmult(dst.block(0), src.block(0));
+    timer.leave_subsection("Pvv vmult");
     dst.block(0) -= utmp2;
 
-    timer.leave_subsection("ILU for Pvv");
+    timer.leave_subsection("Apply Pvv 2");
   }
 
   template <int dim>
@@ -411,8 +419,7 @@ namespace Fluid
     BlockDynamicSparsityPattern schur_dsp(dofs_per_block, dofs_per_block);
     schur_dsp.block(1, 1).compute_mmult_pattern(sparsity_pattern.block(1, 0),
                                                 sparsity_pattern.block(0, 1));
-    schur_matrix.reinit(owned_partitioning, schur_dsp, mpi_communicator);
-
+    
     // Compute the pattern for B2pp perconditioner
     for (auto itr = sparsity_pattern.block(1, 1).begin();
          itr != sparsity_pattern.block(1, 1).end();
@@ -421,6 +428,7 @@ namespace Fluid
         schur_dsp.add(itr->row(), itr->column());
       }
     B2pp_matrix.reinit(owned_partitioning, schur_dsp, mpi_communicator);
+    schur_matrix.reinit(owned_partitioning, schur_dsp, mpi_communicator);
 
     // present_solution is ghosted because it is used in the
     // output and mesh refinement functions.
@@ -927,8 +935,9 @@ namespace Fluid
                   << outer_iteration << " ABS_RES = " << current_residual
                   << " REL_RES = " << relative_residual
                   << " GMRES_ITR = " << std::setw(3) << state.first
-                  << " GMRES_RES = " << state.second << std::endl;
-
+                  << " GMRES_RES = " << state.second
+                  << " INNER_GMRES_ITR = " << std::setw(3)
+                  << preconditioner->get_Tpp_itr_count() << std::endl;
             outer_iteration++;
           }
         // Newton iteration converges, update time and solution
