@@ -174,9 +174,10 @@ namespace Fluid
 
     BlockSparsityPattern sparsity_pattern;
     PETScWrappers::MPI::BlockSparseMatrix system_matrix;
-    PETScWrappers::MPI::BlockSparseMatrix Abs_A_matrix;
-    PETScWrappers::MPI::BlockSparseMatrix schur_matrix;
-    PETScWrappers::MPI::BlockSparseMatrix B2pp_matrix;
+    PETScWrappers::MPI::SparseMatrix Pvv;
+    PETScWrappers::MPI::SparseMatrix Abs_A_matrix;
+    PETScWrappers::MPI::SparseMatrix schur_matrix;
+    PETScWrappers::MPI::SparseMatrix B2pp_matrix;
 
     /// The latest known solution.
     PETScWrappers::MPI::BlockVector present_solution;
@@ -255,9 +256,10 @@ namespace Fluid
         TimerOutput &timer,
         const std::vector<IndexSet> &owned_partitioning,
         const PETScWrappers::MPI::BlockSparseMatrix &system,
-        PETScWrappers::MPI::BlockSparseMatrix &absA,
-        PETScWrappers::MPI::BlockSparseMatrix &schur,
-        PETScWrappers::MPI::BlockSparseMatrix &B2pp);
+        PETScWrappers::MPI::SparseMatrix &Pvv,
+        PETScWrappers::MPI::SparseMatrix &absA,
+        PETScWrappers::MPI::SparseMatrix &schur,
+        PETScWrappers::MPI::SparseMatrix &B2pp);
 
       /// The matrix-vector multiplication must be defined.
       void vmult(PETScWrappers::MPI::BlockVector &dst,
@@ -293,9 +295,10 @@ namespace Fluid
       /// when it is destructed therefore is safer than plain reference.
       const SmartPointer<const PETScWrappers::MPI::BlockSparseMatrix>
         system_matrix;
-      const SmartPointer<PETScWrappers::MPI::BlockSparseMatrix> Abs_A_matrix;
-      const SmartPointer<PETScWrappers::MPI::BlockSparseMatrix> schur_matrix;
-      const SmartPointer<PETScWrappers::MPI::BlockSparseMatrix> B2pp_matrix;
+      const SmartPointer<PETScWrappers::MPI::SparseMatrix> Pvv;
+      const SmartPointer<PETScWrappers::MPI::SparseMatrix> Abs_A_matrix;
+      const SmartPointer<PETScWrappers::MPI::SparseMatrix> schur_matrix;
+      const SmartPointer<PETScWrappers::MPI::SparseMatrix> B2pp_matrix;
       PreconditionPilut Pvv_inverse;
       PreconditionPilut B2pp_inverse;
       std::shared_ptr<SchurComplementTpp> Tpp;

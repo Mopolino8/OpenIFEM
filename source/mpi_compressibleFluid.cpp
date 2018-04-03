@@ -57,8 +57,10 @@ namespace Fluid
     timer.enter_subsection("Pvv vmult 1");
     Pvv_inverse->vmult(tmp2, tmp1);
     timer.leave_subsection("Pvv vmult 1");
+    timer.enter_subsection("system vmult");
     system_matrix->block(1, 0).vmult(tmp3, tmp2);
     system_matrix->block(1, 1).vmult(dst, src);
+    timer.leave_subsection("system vmult");
     dst -= tmp3;
   }
 
@@ -68,27 +70,29 @@ namespace Fluid
       TimerOutput &timer,
       const std::vector<IndexSet> &owned_partitioning,
       const PETScWrappers::MPI::BlockSparseMatrix &system,
-      PETScWrappers::MPI::BlockSparseMatrix &absA,
-      PETScWrappers::MPI::BlockSparseMatrix &schur,
-      PETScWrappers::MPI::BlockSparseMatrix &B2pp)
+      PETScWrappers::MPI::SparseMatrix &Pvv_,
+      PETScWrappers::MPI::SparseMatrix &absA,
+      PETScWrappers::MPI::SparseMatrix &schur,
+      PETScWrappers::MPI::SparseMatrix &B2pp)
     : timer(timer),
       system_matrix(&system),
+      Pvv(&Pvv_),
       Abs_A_matrix(&absA),
       schur_matrix(&schur),
       B2pp_matrix(&B2pp),
       Tpp_itr(0)
   {
+    *Pvv = 0;
+    Pvv->add(1, system_matrix->block(0, 0));
+    Pvv->compress(VectorOperation::add);
     // Initialize the Pvv inverse (the ILU(0) factorization of Avv)
-    timer.enter_subsection("ILU for Pvv");
-    Pvv_inverse.initialize(system_matrix->block(0, 0),
+    Pvv_inverse.initialize(*Pvv,
                            PreconditionPilut::AdditionalData(20, 30, 0.005));
-
-    timer.leave_subsection("ILU for Pvv");
-    timer.enter_subsection("Tpp and B2pp 1");
-
     // Initialize Tpp
-    Tpp.reset(
-      new SchurComplementTpp(timer, owned_partitioning, *system_matrix, Pvv_inverse));
+    Tpp.reset(new SchurComplementTpp(
+      timer, owned_partitioning, *system_matrix, Pvv_inverse));
+
+    timer.enter_subsection("Tpp and B2pp 1");
     // Compute B2pp matrix App - Apv*rowsum(|Avv|)^(-1)*Avp
     // as the preconditioner to solve Tpp^-1
     PETScWrappers::MPI::BlockVector IdentityVector, RowSumAvv, ReverseRowSum;
@@ -100,65 +104,62 @@ namespace Fluid
     // Want to set ReverseRowSum to 1 to calculate the Rowsum first
     IdentityVector.block(0) = 1;
     // iterate the Avv matrix to set everything to positive.
+    *Abs_A_matrix = 0;
+    Abs_A_matrix->add(1, system_matrix->block(0, 0));
+    Abs_A_matrix->compress(VectorOperation::add);
 
-    Abs_A_matrix->block(0, 0).copy_from(system_matrix->block(0, 0));
-    Abs_A_matrix->block(0, 0).compress(VectorOperation::insert);
     // local information of the matrix is in unit of row, so we want to know
     // the range of global row indices that the local rank has.
-    unsigned int row_start = Abs_A_matrix->block(0, 0).local_range().first;
-    unsigned int row_end = Abs_A_matrix->block(0, 0).local_range().second;
+    unsigned int row_start = Abs_A_matrix->local_range().first;
+    unsigned int row_end = Abs_A_matrix->local_range().second;
     unsigned int row_range = row_end - row_start;
     // A temporal vector to cache the columns and values to be set.
     std::vector<std::vector<unsigned int>> cache_columns;
     std::vector<std::vector<double>> cache_values;
     cache_columns.resize(row_range);
     cache_values.resize(row_range);
-    for (auto r = Abs_A_matrix->block(0, 0).local_range().first;
-         r < Abs_A_matrix->block(0, 0).local_range().second;
+    for (auto r = Abs_A_matrix->local_range().first;
+         r < Abs_A_matrix->local_range().second;
          ++r)
       {
         // Allocation of memory for the input values
-        cache_columns[r - row_start].resize(
-          Abs_A_matrix->block(0, 0).row_length(r));
-        cache_values[r - row_start].resize(
-          Abs_A_matrix->block(0, 0).row_length(r));
+        cache_columns[r - row_start].resize(Abs_A_matrix->row_length(r));
+        cache_values[r - row_start].resize(Abs_A_matrix->row_length(r));
         unsigned int col_count = 0;
-        auto itr = Abs_A_matrix->block(0, 0).begin(r);
-        while (col_count < Abs_A_matrix->block(0, 0).row_length(r))
+        auto itr = Abs_A_matrix->begin(r);
+        while (col_count < Abs_A_matrix->row_length(r))
           {
             cache_columns[r - row_start].push_back(itr->column());
             cache_values[r - row_start].push_back(std::abs(itr->value()));
             ++col_count;
-            if (col_count == Abs_A_matrix->block(0, 0).row_length(r))
+            if (col_count == Abs_A_matrix->row_length(r))
               break;
             ++itr;
           }
       }
-    for (auto r = Abs_A_matrix->block(0, 0).local_range().first;
-         r < Abs_A_matrix->block(0, 0).local_range().second;
+    for (auto r = Abs_A_matrix->local_range().first;
+         r < Abs_A_matrix->local_range().second;
          ++r)
       {
-        Abs_A_matrix->block(0, 0).set(
+        Abs_A_matrix->set(
           r, cache_columns[r - row_start], cache_values[r - row_start], true);
       }
-    Abs_A_matrix->block(0, 0).compress(VectorOperation::insert);
+    Abs_A_matrix->compress(VectorOperation::insert);
 
     // Compute the diag vector rowsum(|Avv|)^(-1)
-    Abs_A_matrix->block(0, 0).vmult(RowSumAvv.block(0),
-                                    IdentityVector.block(0));
+    Abs_A_matrix->vmult(RowSumAvv.block(0), IdentityVector.block(0));
     // Reverse the vector and store in ReverseRowSum
     ReverseRowSum.block(0).ratio(IdentityVector.block(0), RowSumAvv.block(0));
     // Compute Schur matrix Apv*rowsum(|Avv|)^(-1)*Avp
-    system_matrix->block(1, 0).mmult(schur_matrix->block(1, 1),
-                                     system_matrix->block(0, 1),
-                                     ReverseRowSum.block(0));
-    B2pp_matrix->block(1, 1) = 0.0;
+    system_matrix->block(1, 0).mmult(
+      *schur_matrix, system_matrix->block(0, 1), ReverseRowSum.block(0));
+    *B2pp_matrix = 0.0;
     B2pp_matrix->compress(VectorOperation::insert);
     // Add in numbers to B2pp
-    B2pp_matrix->block(1, 1).add(-1, schur_matrix->block(1, 1));
-    B2pp_matrix->block(1, 1).add(1, system_matrix->block(1, 1));
+    B2pp_matrix->add(-1, *schur_matrix);
+    B2pp_matrix->add(1, system_matrix->block(1, 1));
     B2pp_matrix->compress(VectorOperation::add);
-    B2pp_inverse.initialize(B2pp_matrix->block(1, 1),
+    B2pp_inverse.initialize(*B2pp_matrix,
                             PreconditionPilut::AdditionalData(20, 30, 0.005));
     timer.leave_subsection("Tpp and B2pp 1");
   }
@@ -211,8 +212,8 @@ namespace Fluid
     SolverGMRES<PETScWrappers::MPI::Vector> gmres(
       solver_control,
       SolverGMRES<PETScWrappers::MPI::Vector>::AdditionalData(200));
-    gmres.solve(*Tpp, dst.block(1), ptmp, B2pp_inverse);
-    //B2pp_inverse.vmult(dst.block(1), ptmp);
+    // gmres.solve(*Tpp, dst.block(1), ptmp, B2pp_inverse);
+    B2pp_inverse.vmult(dst.block(1), ptmp);
     // Count iterations for this solver solving Tpp inverse
     Tpp_itr += solver_control.last_step();
 
@@ -399,6 +400,8 @@ namespace Fluid
   {
     preconditioner.reset();
     system_matrix.clear();
+    Abs_A_matrix.clear();
+    Pvv.clear();
     schur_matrix.clear();
     B2pp_matrix.clear();
 
@@ -412,14 +415,21 @@ namespace Fluid
       locally_relevant_dofs);
 
     system_matrix.reinit(owned_partitioning, dsp, mpi_communicator);
-    Abs_A_matrix.reinit(owned_partitioning, dsp, mpi_communicator);
+    Abs_A_matrix.reinit(owned_partitioning[0],
+                        owned_partitioning[0],
+                        dsp.block(0, 0),
+                        mpi_communicator);
+    Pvv.reinit(owned_partitioning[0],
+               owned_partitioning[0],
+               dsp.block(0, 0),
+               mpi_communicator);
 
     // Compute the sparsity pattern for mass schur in advance.
     // The only nonzero block is (1, 1), which is the same as \f$BB^T\f$.
-    BlockDynamicSparsityPattern schur_dsp(dofs_per_block, dofs_per_block);
-    schur_dsp.block(1, 1).compute_mmult_pattern(sparsity_pattern.block(1, 0),
-                                                sparsity_pattern.block(0, 1));
-    
+    DynamicSparsityPattern schur_dsp(dofs_per_block[1], dofs_per_block[1]);
+    schur_dsp.compute_mmult_pattern(sparsity_pattern.block(1, 0),
+                                    sparsity_pattern.block(0, 1));
+
     // Compute the pattern for B2pp perconditioner
     for (auto itr = sparsity_pattern.block(1, 1).begin();
          itr != sparsity_pattern.block(1, 1).end();
@@ -427,8 +437,15 @@ namespace Fluid
       {
         schur_dsp.add(itr->row(), itr->column());
       }
-    B2pp_matrix.reinit(owned_partitioning, schur_dsp, mpi_communicator);
-    schur_matrix.reinit(owned_partitioning, schur_dsp, mpi_communicator);
+
+    B2pp_matrix.reinit(owned_partitioning[1],
+                       owned_partitioning[1],
+                       schur_dsp,
+                       mpi_communicator);
+    schur_matrix.reinit(owned_partitioning[1],
+                        owned_partitioning[1],
+                        schur_dsp,
+                        mpi_communicator);
 
     // present_solution is ghosted because it is used in the
     // output and mesh refinement functions.
@@ -783,6 +800,7 @@ namespace Fluid
     preconditioner.reset(new BlockIncompSchurPreconditioner(timer,
                                                             owned_partitioning,
                                                             system_matrix,
+                                                            Pvv,
                                                             Abs_A_matrix,
                                                             schur_matrix,
                                                             B2pp_matrix));

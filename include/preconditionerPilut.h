@@ -64,8 +64,9 @@ public:
    */
   void initialize(const PETScWrappers::MatrixBase &matrix,
                   const AdditionalData &additional_data = AdditionalData());
-                  
+
   friend PETScWrappers::MatrixBase;
+
 private:
   /**
    * Store a copy of the flags for this particular preconditioner.

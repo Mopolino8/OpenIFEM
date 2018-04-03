@@ -24,9 +24,15 @@ void PreconditionPilut::initialize(const PETScWrappers::MatrixBase &matrix_,
   matrix = static_cast<Mat>(matrix_);
   additional_data = additional_data_;
 
-  create_pc();
+  MPI_Comm comm = matrix_.get_mpi_communicator();
 
-  PetscErrorCode ierr = PCSetType(pc, const_cast<char *>(PCHYPRE));
+  PetscErrorCode ierr = PCCreate(comm, &pc);
+  AssertThrow(ierr == 0, ExcPETScError(ierr));
+
+  ierr = PCSetOperators(pc, matrix, matrix);
+  AssertThrow(ierr == 0, ExcPETScError(ierr));
+
+  ierr = PCSetType(pc, const_cast<char *>(PCHYPRE));
   AssertThrow(ierr == 0, ExcPETScError(ierr));
 
   ierr = PCHYPRESetType(pc, "pilut");
