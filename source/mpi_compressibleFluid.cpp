@@ -3,6 +3,44 @@
 namespace Fluid
 {
   template <int dim>
+  double ParallelCompressibleFluid<dim>::TimeDependentBoundaryValues::value(
+    const Point<dim> &p, const unsigned int component) const
+  {
+    if (increment)
+      {
+        return time_value(p, component, time) -
+               time_value(p, component, time - dt);
+      }
+    else
+      {
+        return time_value(p, component, time);
+      }
+  }
+
+  template <int dim>
+  void
+  ParallelCompressibleFluid<dim>::TimeDependentBoundaryValues::vector_value(
+    const Point<dim> &p, Vector<double> &values) const
+  {
+    for (unsigned int c = 0; c < this->n_components; ++c)
+      values(c) = TimeDependentBoundaryValues::value(p, c);
+  }
+
+  template <int dim>
+  double
+  ParallelCompressibleFluid<dim>::TimeDependentBoundaryValues::time_value(
+    const Point<dim> &p, const unsigned int component, const double t) const
+  {
+    Assert(component < this->n_components,
+           ExcIndexRange(component, 0, this->n_components));
+    if (component == 0 && std::abs(p[0]) < 1e-10)
+      {
+        return 6.0 * exp(-0.5 * pow((t - 0.5e-4) / 0.15e-4, 2));
+      }
+    return 0;
+  }
+
+  template <int dim>
   double ParallelCompressibleFluid<dim>::BoundaryValues::value(
     const Point<dim> &p, const unsigned int component) const
   {
@@ -87,7 +125,7 @@ namespace Fluid
     Pvv->compress(VectorOperation::add);
     // Initialize the Pvv inverse (the ILU(0) factorization of Avv)
     Pvv_inverse.initialize(*Pvv,
-                           PreconditionPilut::AdditionalData(20, 30, 0.005));
+                           PreconditionPilut::AdditionalData(20, 30, 0.001));
     // Initialize Tpp
     Tpp.reset(new SchurComplementTpp(
       timer, owned_partitioning, *system_matrix, Pvv_inverse));
@@ -160,7 +198,7 @@ namespace Fluid
     B2pp_matrix->add(1, system_matrix->block(1, 1));
     B2pp_matrix->compress(VectorOperation::add);
     B2pp_inverse.initialize(*B2pp_matrix,
-                            PreconditionPilut::AdditionalData(20, 30, 0.005));
+                            PreconditionPilut::AdditionalData(20, 30, 0.001));
     timer.leave_subsection("Tpp and B2pp 1");
   }
 
@@ -212,8 +250,8 @@ namespace Fluid
     SolverGMRES<PETScWrappers::MPI::Vector> gmres(
       solver_control,
       SolverGMRES<PETScWrappers::MPI::Vector>::AdditionalData(200));
-    // gmres.solve(*Tpp, dst.block(1), ptmp, B2pp_inverse);
-    B2pp_inverse.vmult(dst.block(1), ptmp);
+    gmres.solve(*Tpp, dst.block(1), ptmp, B2pp_inverse);
+    // B2pp_inverse.vmult(dst.block(1), ptmp);
     // Count iterations for this solver solving Tpp inverse
     Tpp_itr += solver_control.last_step();
 
@@ -308,10 +346,14 @@ namespace Fluid
     {
       nonzero_constraints.clear();
       zero_constraints.clear();
+      increment_constraints.clear();
       nonzero_constraints.reinit(locally_relevant_dofs);
       zero_constraints.reinit(locally_relevant_dofs);
+      increment_constraints.reinit(locally_relevant_dofs);
       DoFTools::make_hanging_node_constraints(dof_handler, nonzero_constraints);
       DoFTools::make_hanging_node_constraints(dof_handler, zero_constraints);
+      DoFTools::make_hanging_node_constraints(dof_handler,
+                                              increment_constraints);
       for (auto itr = parameters.fluid_dirichlet_bcs.begin();
            itr != parameters.fluid_dirichlet_bcs.end();
            ++itr)
@@ -375,7 +417,9 @@ namespace Fluid
             dof_handler,
             id,
             // Functions::ConstantFunction<dim>(augmented_value),
-            BoundaryValues(),
+            // BoundaryValues(),
+            TimeDependentBoundaryValues(
+              time.current(), time.get_delta_t(), false),
             nonzero_constraints,
             ComponentMask(mask));
           VectorTools::interpolate_boundary_values(
@@ -384,10 +428,20 @@ namespace Fluid
             Functions::ZeroFunction<dim>(dim + 1),
             zero_constraints,
             ComponentMask(mask));
+          VectorTools::interpolate_boundary_values(
+            dof_handler,
+            id,
+            // Functions::ConstantFunction<dim>(augmented_value),
+            // BoundaryValues(),
+            TimeDependentBoundaryValues(
+              time.current(), time.get_delta_t(), true),
+            increment_constraints,
+            ComponentMask(mask));
         }
     }
     nonzero_constraints.close();
     zero_constraints.close();
+    increment_constraints.close();
 
     pcout << "   Number of active fluid cells: "
           << triangulation.n_global_active_cells() << std::endl
@@ -753,7 +807,7 @@ namespace Fluid
             cell->get_dof_indices(local_dof_indices);
 
             const ConstraintMatrix &constraints_used =
-              initial_step ? nonzero_constraints : zero_constraints;
+              initial_step ? increment_constraints : zero_constraints;
 
             if (assemble_matrix)
               {
@@ -818,7 +872,7 @@ namespace Fluid
     gmres.solve(system_matrix, newton_update, system_rhs, *preconditioner);
 
     const ConstraintMatrix &constraints_used =
-      initial_step ? nonzero_constraints : zero_constraints;
+      initial_step ? increment_constraints : zero_constraints;
     constraints_used.distribute(newton_update);
 
     return {solver_control.last_step(), solver_control.last_value()};
@@ -898,14 +952,14 @@ namespace Fluid
     setup_dofs();
     initialize_system();
 
-    bool first_step = true;
-
     // Time loop.
     std::cout.precision(6);
     std::cout.width(12);
     output_results(time.get_timestep());
     while (time.end() - time.current() > 1e-12)
       {
+        bool first_step = true;
+
         time.increment();
         pcout << std::string(96, '*') << std::endl
               << "Time step = " << time.get_timestep()
@@ -969,6 +1023,7 @@ namespace Fluid
           {
             refine_mesh(1, 3);
           }
+        setup_dofs();
       }
   }
 

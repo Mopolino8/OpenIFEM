@@ -63,7 +63,7 @@ namespace Fluid
 {
   using namespace dealii;
 
-  /** \brief The incompressible Navier Stokes equation solver.
+  /** \brief The compressible Navier Stokes equation solver.
    *
    * This program is built upon dealii tutorials step-57, step-22, step-20.
    * We use fully implicit scheme for time stepping.
@@ -171,6 +171,7 @@ namespace Fluid
 
     ConstraintMatrix zero_constraints;
     ConstraintMatrix nonzero_constraints;
+    ConstraintMatrix increment_constraints;
 
     BlockSparsityPattern sparsity_pattern;
     PETScWrappers::MPI::BlockSparseMatrix system_matrix;
@@ -229,6 +230,39 @@ namespace Fluid
 
       virtual void vector_value(const Point<dim> &p,
                                 Vector<double> &values) const;
+    };
+
+    /** \brief Helper function to specity time dependent Dirichlet
+    * boundary conditions.
+    *
+    * It specifies a gaussian waveat the left side boundary,
+    * and all the remaining boundaries are considered as walls
+    * except for the right side one.
+    */
+    class TimeDependentBoundaryValues : public Function<dim>
+    {
+    public:
+      TimeDependentBoundaryValues()
+        : Function<dim>(dim + 1), time(0), dt(0), increment(false)
+      {
+      }
+      TimeDependentBoundaryValues(double t, double dt_, bool inc)
+        : Function<dim>(dim + 1), time(t), dt(dt_), increment(inc)
+      {
+      }
+      virtual double value(const Point<dim> &p,
+                           const unsigned int component) const;
+
+      virtual void vector_value(const Point<dim> &p,
+                                Vector<double> &values) const;
+
+    private:
+      double time_value(const Point<dim> &p,
+                        const unsigned int component,
+                        double t) const;
+      double time;
+      double dt;
+      bool increment;
     };
 
     /** \brief Incomplete Schur Complement Block Preconditioner
