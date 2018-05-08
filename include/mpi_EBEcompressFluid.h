@@ -1,10 +1,5 @@
-#ifndef PARALLEL_COMP_FLUID
-#define PARALLEL_COMP_FLUID
-/*this macro is used to specify which
-  preconditioner to use. If ILU is
-  defined, Euclid ILU(k) will be used.
-  Otherwise, no ILU will be performed
-*/
+#ifndef PARALLEL_EBE_COMP_FLUID
+#define PARALLEL_EBE_COMP_FLUID
 
 #include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
@@ -85,7 +80,7 @@ namespace Fluid
    * and the pressure block in the solution is the real pressure.
    */
   template <int dim>
-  class ParallelCompressibleFluid
+  class EBECompressibleFluid
   {
   public:
     /** \brief Constructor.
@@ -96,18 +91,15 @@ namespace Fluid
      * functions or by reading Abaqus input file. Also, a parameter handler is
      * required to specify all the input parameters.
      */
-    ParallelCompressibleFluid(parallel::distributed::Triangulation<dim> &,
-                              const Parameters::AllParameters &);
+    EBECompressibleFluid(parallel::distributed::Triangulation<dim> &,
+                         const Parameters::AllParameters &);
     /*! \brief Destructor. */
-    ~ParallelCompressibleFluid() { dof_handler.clear(); };
+    ~EBECompressibleFluid() { dof_handler.clear(); };
     /**
      * This function implements the Newton iteration with given tolerance
      * and maximum number of iterations.
      */
     void run();
-
-    //! Return the solution for testing.
-    PETScWrappers::MPI::BlockVector get_current_solution() const;
 
   private:
     /**
@@ -116,21 +108,12 @@ namespace Fluid
      * Space/time-dependent Dirichlet BCs are hard-coded in this class.
      */
     class BoundaryValues;
+    
+    class BlockDiagonalPreconditioner;
     /**
-     * The blcok preconditioner for the whole linear system.
-     * It is a private member of NavierStokes<dim>.
+     * This function initializes the DoFHandler and constraints.
      */
-    class BlockIncompSchurPreconditioner;
-
-    //! Set up the dofs based on the finite element and renumber them.
     void setup_dofs();
-
-    //! Set up the nonzero and zero constraints.
-    void make_constraints();
-
-    //! Manually set increment bc for time dependent BC. Should only be
-    // used in make_constraints();
-    void apply_nonzero_boundary_values(unsigned int id);
     /**
      * Specify the sparsity pattern and reinit matrices and vectors.
      * It is separated from setup_dofs because when we do mesh refinement
@@ -145,7 +128,9 @@ namespace Fluid
      * assemble the whole system or only the right hand side vector,
      * respectively.
      */
-    void assemble(const bool use_nonzero_constraints);
+    void assemble(const bool, const bool);
+    void assemble_system(const bool);
+    void assemble_rhs(const bool);
     /**
      * In this function, we use GMRES solver with the block preconditioner,
      * which is defined at the beginning of the program, to solve the linear
@@ -155,7 +140,7 @@ namespace Fluid
      * In the following steps, we will solve for the Newton update so zero
      * constraints are used.
      */
-    std::pair<unsigned int, double> solve(const bool use_nonzero_constraints);
+    std::pair<unsigned int, double> solve(const bool);
     /**
      * After finding a good initial guess on the coarse mesh, we hope to
      * decrease the error through refining the mesh. Here we do adaptive
@@ -170,17 +155,6 @@ namespace Fluid
      */
     void output_results(const unsigned int) const;
 
-    /*! \brief Run the simulation for one time step.
-     *
-     *  If the Dirichlet BC is time-dependent, nonzero constraints must be
-     * applied
-     *  at every first Newton iteration in every time step. If it is not, only
-     *  apply nonzero constraints at the first iteration in the first time step.
-     *  A boolean argument controls whether nonzero constraints should be
-     *  applied in a certain time step.
-     */
-    void run_one_step(bool apply_nonzero_constraints);
-
     double viscosity; //!< Dynamic viscosity
     double rho;
     const unsigned int degree;
@@ -194,13 +168,11 @@ namespace Fluid
 
     ConstraintMatrix zero_constraints;
     ConstraintMatrix nonzero_constraints;
+    ConstraintMatrix increment_constraints;
 
     BlockSparsityPattern sparsity_pattern;
     PETScWrappers::MPI::BlockSparseMatrix system_matrix;
-    PETScWrappers::MPI::SparseMatrix Pvv;
-    PETScWrappers::MPI::SparseMatrix Abs_A_matrix;
-    PETScWrappers::MPI::SparseMatrix schur_matrix;
-    PETScWrappers::MPI::SparseMatrix B2pp_matrix;
+    PETScWrappers::MPI::BlockSparseMatrix diag_preconditioner;
 
     /// The latest known solution.
     PETScWrappers::MPI::BlockVector present_solution;
@@ -232,7 +204,7 @@ namespace Fluid
     IndexSet locally_relevant_dofs;
 
     /// The BlockIncompSchurPreconditioner for the whole system:
-    std::shared_ptr<BlockIncompSchurPreconditioner> preconditioner;
+    std::shared_ptr<BlockDiagonalPreconditioner> preconditioner;
 
     Utils::Time time;
     mutable TimerOutput timer;
@@ -264,8 +236,14 @@ namespace Fluid
     class TimeDependentBoundaryValues : public Function<dim>
     {
     public:
-      TimeDependentBoundaryValues() : Function<dim>(dim + 1), time(0) {}
-      TimeDependentBoundaryValues(double t) : Function<dim>(dim + 1), time(t) {}
+      TimeDependentBoundaryValues()
+        : Function<dim>(dim + 1), time(0), dt(0), increment(false)
+      {
+      }
+      TimeDependentBoundaryValues(double t, double dt_, bool inc)
+        : Function<dim>(dim + 1), time(t), dt(dt_), increment(inc)
+      {
+      }
       virtual double value(const Point<dim> &p,
                            const unsigned int component) const;
 
@@ -273,98 +251,44 @@ namespace Fluid
                                 Vector<double> &values) const;
 
     private:
+      double time_value(const Point<dim> &p,
+                        const unsigned int component,
+                        double t) const;
       double time;
+      double dt;
+      bool increment;
     };
 
-    /** \brief Incomplete Schur Complement Block Preconditioner
-   * The format of this preconditioner is as follow:
-   *
-   * |Pvv^-1  -Pvv^-1*Avp*Tpp^-1|*|I            0|
-   * |                          | |              |
-   * |0            Tpp^-1       | |-Apv*Pvv^-1  I|
-   * With Pvv the ILU(0) of Avv,
-   * and Tpp the incomplete Schur complement.
-   * The evaluation for Tpp is in SchurComplementTpp class,
-   * and its inverse is solved by performing some GMRES iterations
-   * By using B2pp = ILU(0) of (App - Apv*(rowsum|Avv|)^-1*Avp
-   * as preconditioner.
-   * This preconditioner is proposed in:
-   * T. Washio et al., A robust preconditioner for fluid–structure
-   * interaction problems, Comput. Methods Appl. Mech. Engrg.
-   * 194 (2005) 4027–4047
-   */
-    class BlockIncompSchurPreconditioner : public Subscriptor
+    class BlockDiagonalPreconditioner : public Subscriptor
     {
     public:
-      /// Constructor.
-      BlockIncompSchurPreconditioner(
+      /// constructor.
+      BlockDiagonalPreconditioner(
         TimerOutput &timer,
-        const std::vector<IndexSet> &owned_partitioning,
-        const PETScWrappers::MPI::BlockSparseMatrix &system,
-        PETScWrappers::MPI::SparseMatrix &absA,
-        PETScWrappers::MPI::SparseMatrix &schur,
-        PETScWrappers::MPI::SparseMatrix &B2pp);
-
+        const PETScWrappers::MPI::BlockSparseMatrix &system);
       /// The matrix-vector multiplication must be defined.
       void vmult(PETScWrappers::MPI::BlockVector &dst,
                  const PETScWrappers::MPI::BlockVector &src) const;
-      /// Accessors for the blocks of the system matrix for clearer
-      /// representation
-      const PETScWrappers::MPI::SparseMatrix &Avv() const
-      {
-        return system_matrix->block(0, 0);
-      }
-      const PETScWrappers::MPI::SparseMatrix &Avp() const
-      {
-        return system_matrix->block(0, 1);
-      }
-      const PETScWrappers::MPI::SparseMatrix &Apv() const
-      {
-        return system_matrix->block(1, 0);
-      }
-      const PETScWrappers::MPI::SparseMatrix &App() const
-      {
-        return system_matrix->block(1, 1);
-      }
-      int get_Tpp_itr_count() const { return Tpp_itr; }
-      void Erase_Tpp_count() { Tpp_itr = 0; }
-
     private:
-      class SchurComplementTpp;
-
-      /// We would like to time the BlockSchuPreconditioner in detail.
+      class innerBlock;
       TimerOutput &timer;
-
-      /// dealii smart pointer checks if an object is still being referenced
-      /// when it is destructed therefore is safer than plain reference.
+      std::shared_ptr<innerBlock> M;
       const SmartPointer<const PETScWrappers::MPI::BlockSparseMatrix>
-        system_matrix;
-      const SmartPointer<PETScWrappers::MPI::SparseMatrix> Abs_A_matrix;
-      const SmartPointer<PETScWrappers::MPI::SparseMatrix> schur_matrix;
-      const SmartPointer<PETScWrappers::MPI::SparseMatrix> B2pp_matrix;
-
-      PreconditionEuclid Pvv_inverse;
-      PreconditionEuclid B2pp_inverse;
-
-      std::shared_ptr<SchurComplementTpp> Tpp;
-      // iteration counter for solving Tpp
-      mutable int Tpp_itr;
-      class SchurComplementTpp : public Subscriptor
+            system_matrix;
+      class innerBlock : public Subscriptor
       {
       public:
-        SchurComplementTpp(TimerOutput &timer,
-                           const std::vector<IndexSet> &owned_partitioning,
-                           const PETScWrappers::MPI::BlockSparseMatrix &system,
-                           const PETScWrappers::PreconditionerBase &Pvvinv);
-        void vmult(PETScWrappers::MPI::Vector &dst,
-                   const PETScWrappers::MPI::Vector &src) const;
-
+        /// constructor
+        innerBlock(
+          TimerOutput &timer,
+          const PETScWrappers::MPI::BlockSparseMatrix &system);
+        /// The matrix-vector multiplication must be defined.
+        void vmult(PETScWrappers::MPI::BlockVector &dst,
+                 const PETScWrappers::MPI::BlockVector &src) const;
       private:
         TimerOutput &timer;
         const SmartPointer<const PETScWrappers::MPI::BlockSparseMatrix>
-          system_matrix;
-        const PETScWrappers::PreconditionerBase *Pvv_inverse;
-        PETScWrappers::MPI::BlockVector dumb_vector;
+            system_matrix;
       };
     };
   };

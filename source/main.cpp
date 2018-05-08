@@ -1,5 +1,6 @@
 #include "hyperelasticSolver.h"
 #include "linearElasticSolver.h"
+#include "mpi_EBEcompressFluid.h"
 #include "mpi_compressibleFluid.h"
 #include "mpi_linearelasticity.h"
 #include "mpi_navierstokes.h"
@@ -40,19 +41,27 @@ int main(int argc, char *argv[])
           // Utils::GridCreator::flow_around_cylinder(tria);
           GridGenerator::subdivided_hyper_rectangle(
             tria,
-            std::vector<unsigned int>({16U, 4U}),
+            {16U, 4U},
             Point<2>(),
             Point<2>(8.0, 2.0),
             true);
           // Fluid::ParallelNavierStokes<2> flow(tria, params);
           Fluid::ParallelCompressibleFluid<2> flow(tria, params);
+          // Fluid::EBECompressibleFluid<2> flow(tria, params);
           flow.run();
         }
       else if (params.dimension == 3)
         {
           parallel::distributed::Triangulation<3> tria(MPI_COMM_WORLD);
+          GridGenerator::subdivided_hyper_rectangle(
+            tria,
+            std::vector<unsigned int>({16U, 4U, 4U}),
+            Point<3>(),
+            Point<3>(8.0, 2.0, 2.0),
+            true);
           Utils::GridCreator::flow_around_cylinder(tria);
-          Fluid::ParallelNavierStokes<3> flow(tria, params);
+          // Fluid::ParallelNavierStokes<3> flow(tria, params);
+          Fluid::ParallelCompressibleFluid<3> flow(tria, params);
           flow.run();
         }
       else

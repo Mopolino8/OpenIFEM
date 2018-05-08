@@ -74,4 +74,30 @@ private:
   AdditionalData additional_data;
 };
 
+class PreconditionEuclid : public PETScWrappers::PreconditionerBase
+{
+public:
+  /**
+   * Empty Constructor. You need to call initialize() before using this
+   * object.
+   */
+  PreconditionEuclid() = default;
+
+  /**
+   * Constructor. Take the matrix which is used to form the preconditioner,
+   * and additional flags if there are any.
+   */
+  PreconditionEuclid(const PETScWrappers::MatrixBase &matrix);
+
+  /**
+   * Initialize the preconditioner object and calculate all data that is
+   * necessary for applying it in a solver. This function is automatically
+   * called when calling the constructor with the same arguments and is only
+   * used if you create the preconditioner without arguments.
+   */
+  void initialize(const PETScWrappers::MatrixBase &matrix);
+
+  friend PETScWrappers::MatrixBase;
+};
+
 #endif
