@@ -94,6 +94,7 @@ PCSetFromOptions_HYPRE_Euclid(PetscOptionItems *PetscOptionsObject, PC pc)
 
 static PetscErrorCode PCView_HYPRE_Euclid(PC pc, PetscViewer viewer)
 {
+  (void)pc;
   PetscErrorCode ierr;
   PetscBool iascii;
   PetscInt levels = 0;

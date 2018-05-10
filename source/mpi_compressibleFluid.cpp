@@ -236,7 +236,7 @@ namespace Fluid
 
     timer.leave_subsection("Solving Tpp");
 
-    // Solve Pvv^-1*src(0) - Pvv^-1*Avp*dst(1)
+    // Compute Pvv^-1*src(0) - Pvv^-1*Avp*dst(1)
     PETScWrappers::MPI::Vector utmp1(src.block(0)), utmp2(src.block(0));
     this->Avp().vmult(utmp1, dst.block(1));
     Pvv_inverse.vmult(utmp2, utmp1);

@@ -120,9 +120,10 @@ namespace Fluid
    */
   template <int dim>
   CompressibleFluid<dim>::BlockIncompSchurPreconditioner::SchurComplementTpp::
-    SchurComplementTpp(const BlockSparseMatrix<double> &system,
+    SchurComplementTpp(TimerOutput &timer,
+                       const BlockSparseMatrix<double> &system,
                        const SparseILU<double> &Pvvinv)
-    : system_matrix(&system), Pvv_inverse(&Pvvinv)
+    : timer(timer), system_matrix(&system), Pvv_inverse(&Pvvinv)
   {
   }
 
@@ -131,6 +132,7 @@ namespace Fluid
     SchurComplementTpp::vmult(Vector<double> &dst,
                               const Vector<double> &src) const
   {
+    TimerOutput::Scope timer_section(timer, "Tpp vmult");
     // this is the exact representation of Tpp = App - Apv * Avv * Avp.
     Vector<double> tmp1(this->Avv().m()), tmp2(this->Avv().m()),
       tmp3(src.size());
@@ -143,10 +145,12 @@ namespace Fluid
 
   template <int dim>
   CompressibleFluid<dim>::BlockIncompSchurPreconditioner::
-    BlockIncompSchurPreconditioner(const BlockSparseMatrix<double> &system,
+    BlockIncompSchurPreconditioner(TimerOutput &timer,
+                                   const BlockSparseMatrix<double> &system,
                                    SparseMatrix<double> &schur,
                                    SparseMatrix<double> &B2pp)
-    : system_matrix(&system),
+    : timer(timer),
+      system_matrix(&system),
       schur_matrix(&schur),
       B2pp_matrix(&B2pp),
       Tpp_itr(0)
@@ -154,7 +158,7 @@ namespace Fluid
     // Initialize the Pvv inverse (the ILU(0) factorization of Avv)
     Pvv_inverse.initialize(this->Avv());
     // Initialize Tpp
-    Tpp.reset(new SchurComplementTpp(*system_matrix, Pvv_inverse));
+    Tpp.reset(new SchurComplementTpp(timer, *system_matrix, Pvv_inverse));
     // Compute B2pp matrix App - Apv*rowsum(|Avv|)^(-1)*Avp
     // as the preconditioner to solve Tpp^-1
     Vector<double> RowSumAvv(this->Avv().m());
@@ -219,7 +223,10 @@ namespace Fluid
       c *= alpha;
       dst.block(1) = c;
     }
+
     // Compute the multiplication
+    timer.enter_subsection("Solving Tpp");
+
     SolverControl solver_control(
       ptmp.size(), 1e-6 * ptmp.l2_norm(), true, true);
     SolverGMRES<Vector<double>> gmres(
@@ -227,7 +234,10 @@ namespace Fluid
     gmres.solve(*Tpp, dst.block(1), ptmp, B2pp_inverse);
     // Count iterations for this solver solving Tpp inverse
     Tpp_itr += solver_control.last_step();
-    // Solve Pvv^-1*src(0) - Pvv^-1*Avp*dst(1)
+
+    timer.leave_subsection("Solving Tpp");
+
+    // Compute Pvv^-1*src(0) - Pvv^-1*Avp*dst(1)
     Vector<double> utmp1(src.block(0).size()), utmp2(src.block(0).size());
     this->Avp().vmult(utmp1, dst.block(1));
     Pvv_inverse.vmult(utmp2, utmp1);
@@ -774,7 +784,7 @@ namespace Fluid
     TimerOutput::Scope timer_section(timer, "Solve linear system");
 
     preconditioner.reset(new BlockIncompSchurPreconditioner(
-      system_matrix, schur_matrix, B2pp_matrix));
+      timer, system_matrix, schur_matrix, B2pp_matrix));
 
     // NOTE: SolverFGMRES only applies the preconditioner from the right,
     // as opposed to SolverGMRES which allows both left and right
@@ -982,7 +992,7 @@ namespace Fluid
 
     data_out.build_patches(parameters.fluid_degree + 1);
 
-    std::string basename = "CompressibleFluid";
+    std::string basename = "navierstokes";
     std::string filename =
       basename + "-" + Utilities::int_to_string(output_index, 6) + ".vtu";
 

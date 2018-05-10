@@ -299,7 +299,8 @@ namespace Fluid
     class BlockIncompSchurPreconditioner : public Subscriptor
     {
     public:
-      BlockIncompSchurPreconditioner(const BlockSparseMatrix<double> &system,
+      BlockIncompSchurPreconditioner(TimerOutput &timer,
+                                     const BlockSparseMatrix<double> &system,
                                      SparseMatrix<double> &schur,
                                      SparseMatrix<double> &B2pp);
       void vmult(BlockVector<double> &dst,
@@ -325,6 +326,10 @@ namespace Fluid
 
     private:
       class SchurComplementTpp;
+
+      /// We would like to time the BlockSchuPreconditioner in detail.
+      TimerOutput &timer;
+
       const SmartPointer<const BlockSparseMatrix<double>> system_matrix;
       const SmartPointer<SparseMatrix<double>> schur_matrix;
       const SmartPointer<SparseMatrix<double>> B2pp_matrix;
@@ -335,7 +340,8 @@ namespace Fluid
       class SchurComplementTpp : public Subscriptor
       {
       public:
-        SchurComplementTpp(const BlockSparseMatrix<double> &system,
+        SchurComplementTpp(TimerOutput &timer,
+                           const BlockSparseMatrix<double> &system,
                            const SparseILU<double> &Pvvinv);
         void vmult(Vector<double> &dst, const Vector<double> &src) const;
         const SparseMatrix<double> &Avv() const
@@ -356,6 +362,7 @@ namespace Fluid
         }
 
       private:
+        TimerOutput &timer;
         const SmartPointer<const BlockSparseMatrix<double>> system_matrix;
         const SmartPointer<const SparseILU<double>> Pvv_inverse;
       };
