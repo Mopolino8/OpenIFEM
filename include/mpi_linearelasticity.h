@@ -214,6 +214,6 @@ namespace Solid
 
     mutable TimerOutput timer;
   };
-}
+} // namespace Solid
 
 #endif

@@ -78,6 +78,6 @@ namespace Utils
     static void flow_around_cylinder_2d(Triangulation<2> &,
                                         bool compute_in_2d = true);
   };
-}
+} // namespace Utils
 
 #endif

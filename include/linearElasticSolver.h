@@ -199,6 +199,6 @@ namespace Solid
 
     Parameters::AllParameters parameters;
   };
-}
+} // namespace Solid
 
 #endif

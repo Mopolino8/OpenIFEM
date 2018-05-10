@@ -96,7 +96,7 @@ namespace
     double dPsi_vol_dJ;
     double d2Psi_vol_dJ2;
   };
-}
+} // namespace
 
 namespace Solid
 {
@@ -224,6 +224,6 @@ namespace Solid
     // Return the current volume of the geometry
     double compute_volume() const;
   };
-}
+} // namespace Solid
 
 #endif

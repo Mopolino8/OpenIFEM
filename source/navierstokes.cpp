@@ -722,4 +722,4 @@ namespace Fluid
 
   template class NavierStokes<2>;
   template class NavierStokes<3>;
-}
+} // namespace Fluid

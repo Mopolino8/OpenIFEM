@@ -128,9 +128,6 @@ namespace Fluid
     //! Set up the nonzero and zero constraints.
     void make_constraints();
 
-    //! Manually set increment bc for time dependent BC. Should only be
-    // used in make_constraints();
-    void apply_nonzero_boundary_values(unsigned int id);
     /**
      * Specify the sparsity pattern and reinit matrices and vectors.
      * It is separated from setup_dofs because when we do mesh refinement
@@ -194,6 +191,7 @@ namespace Fluid
 
     ConstraintMatrix zero_constraints;
     ConstraintMatrix nonzero_constraints;
+    ConstraintMatrix increment_constraints;
 
     BlockSparsityPattern sparsity_pattern;
     PETScWrappers::MPI::BlockSparseMatrix system_matrix;
@@ -255,44 +253,54 @@ namespace Fluid
     };
 
     /** \brief Helper function to specity time dependent Dirichlet
-    * boundary conditions.
-    *
-    * It specifies a gaussian waveat the left side boundary,
-    * and all the remaining boundaries are considered as walls
-    * except for the right side one.
-    */
+     * boundary conditions.
+     *
+     * It specifies a gaussian waveat the left side boundary,
+     * and all the remaining boundaries are considered as walls
+     * except for the right side one.
+     */
     class TimeDependentBoundaryValues : public Function<dim>
     {
     public:
-      TimeDependentBoundaryValues() : Function<dim>(dim + 1), time(0) {}
-      TimeDependentBoundaryValues(double t) : Function<dim>(dim + 1), time(t) {}
+      TimeDependentBoundaryValues()
+        : Function<dim>(dim + 1), time(0), dt(0), increment(false)
+      {
+      }
+      TimeDependentBoundaryValues(double t, double dt_, bool inc)
+        : Function<dim>(dim + 1), time(t), dt(dt_), increment(inc)
+      {
+      }
       virtual double value(const Point<dim> &p,
                            const unsigned int component) const;
-
       virtual void vector_value(const Point<dim> &p,
                                 Vector<double> &values) const;
 
     private:
+      double time_value(const Point<dim> &p,
+                        const unsigned int component,
+                        const double t) const;
       double time;
+      double dt;
+      bool increment;
     };
 
     /** \brief Incomplete Schur Complement Block Preconditioner
-   * The format of this preconditioner is as follow:
-   *
-   * |Pvv^-1  -Pvv^-1*Avp*Tpp^-1|*|I            0|
-   * |                          | |              |
-   * |0            Tpp^-1       | |-Apv*Pvv^-1  I|
-   * With Pvv the ILU(0) of Avv,
-   * and Tpp the incomplete Schur complement.
-   * The evaluation for Tpp is in SchurComplementTpp class,
-   * and its inverse is solved by performing some GMRES iterations
-   * By using B2pp = ILU(0) of (App - Apv*(rowsum|Avv|)^-1*Avp
-   * as preconditioner.
-   * This preconditioner is proposed in:
-   * T. Washio et al., A robust preconditioner for fluid–structure
-   * interaction problems, Comput. Methods Appl. Mech. Engrg.
-   * 194 (2005) 4027–4047
-   */
+     * The format of this preconditioner is as follow:
+     *
+     * |Pvv^-1  -Pvv^-1*Avp*Tpp^-1|*|I            0|
+     * |                          | |              |
+     * |0            Tpp^-1       | |-Apv*Pvv^-1  I|
+     * With Pvv the ILU(0) of Avv,
+     * and Tpp the incomplete Schur complement.
+     * The evaluation for Tpp is in SchurComplementTpp class,
+     * and its inverse is solved by performing some GMRES iterations
+     * By using B2pp = ILU(0) of (App - Apv*(rowsum|Avv|)^-1*Avp
+     * as preconditioner.
+     * This preconditioner is proposed in:
+     * T. Washio et al., A robust preconditioner for fluid–structure
+     * interaction problems, Comput. Methods Appl. Mech. Engrg.
+     * 194 (2005) 4027–4047
+     */
     class BlockIncompSchurPreconditioner : public Subscriptor
     {
     public:
@@ -368,6 +376,6 @@ namespace Fluid
       };
     };
   };
-}
+} // namespace Fluid
 
 #endif

@@ -297,6 +297,6 @@ namespace Fluid
       SparseDirectUMFPACK A_inverse;
     };
   };
-}
+} // namespace Fluid
 
 #endif

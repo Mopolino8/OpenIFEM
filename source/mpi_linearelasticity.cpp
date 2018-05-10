@@ -537,4 +537,4 @@ namespace Solid
 
   template class ParallelLinearElasticity<2>;
   template class ParallelLinearElasticity<3>;
-}
+} // namespace Solid

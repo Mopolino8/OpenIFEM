@@ -324,6 +324,6 @@ namespace Fluid
       mutable PETScWrappers::SparseDirectMUMPS A_inverse;
     };
   };
-}
+} // namespace Fluid
 
 #endif

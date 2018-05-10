@@ -827,4 +827,4 @@ namespace Fluid
 
   template class ParallelNavierStokes<2>;
   template class ParallelNavierStokes<3>;
-}
+} // namespace Fluid
